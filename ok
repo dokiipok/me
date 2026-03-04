@@ -1,253 +1,104 @@
 const express = require("express");
-const { body, validationResult, matchedData } = require("express-validator");
+const bodyParser = require("body-parser");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const sqlite3 = require("sqlite3").verbose();
+const cors = require("cors");
 
 const app = express();
-app.use(express.urlencoded({ extended: true }));
+app.use(cors());
+app.use(bodyParser.json());
 
-/* =========================
-   In-Memory Storage
-========================= */
-class UsersStorage {
-  constructor() {
-    this.storage = {};
-    this.id = 0;
-  }
+const SECRET = "supersecretkey";
 
-  addUser(user) {
-    const id = this.id;
-    this.storage[id] = { id, ...user };
-    this.id++;
-  }
+// Setup SQLite DB
+const db = new sqlite3.Database(":memory:");
+db.serialize(() => {
+  db.run(`CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    email TEXT UNIQUE,
+    passwordHash TEXT,
+    avatarUrl TEXT
+  )`);
+  db.run(`CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    senderId INTEGER,
+    receiverId INTEGER,
+    text TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+});
 
-  getUsers() {
-    return Object.values(this.storage);
-  }
-
-  getUser(id) {
-    return this.storage[id];
-  }
-
-  updateUser(id, user) {
-    this.storage[id] = { id: Number(id), ...user };
-  }
-
-  deleteUser(id) {
-    delete this.storage[id];
-  }
-
-  searchUsers(query) {
-    return Object.values(this.storage).filter(user => {
-      return (
-        (query.name &&
-          (user.firstName.toLowerCase().includes(query.name.toLowerCase()) ||
-           user.lastName.toLowerCase().includes(query.name.toLowerCase()))) ||
-        (query.email &&
-          user.email.toLowerCase().includes(query.email.toLowerCase()))
-      );
-    });
+// Auth middleware
+function authMiddleware(req, res, next) {
+  const token = req.headers["authorization"];
+  if (!token) return res.status(401).send("Missing token");
+  try {
+    req.user = jwt.verify(token, SECRET);
+    next();
+  } catch {
+    res.status(403).send("Invalid token");
   }
 }
 
-const usersStorage = new UsersStorage();
-
-/* =========================
-   Validation
-========================= */
-const validateUser = [
-  body("firstName")
-    .trim()
-    .isAlpha().withMessage("First name must contain letters only.")
-    .isLength({ min: 1, max: 20 }).withMessage("First name required (max 20)."),
-
-  body("lastName")
-    .trim()
-    .isAlpha().withMessage("Last name must contain letters only.")
-    .isLength({ min: 1, max: 20 }).withMessage("Last name required (max 20)."),
-
-  body("email")
-    .trim()
-    .isEmail().withMessage("Valid email required.")
-    .normalizeEmail(),
-
-  body("age")
-    .optional({ values: "falsy" })
-    .isInt({ min: 18, max: 120 })
-    .withMessage("Age must be between 18 and 120."),
-
-  body("bio")
-    .optional({ values: "falsy" })
-    .isLength({ max: 200 })
-    .withMessage("Bio must be under 200 characters.")
-    .trim(),
-];
-
-/* =========================
-   Helper: Layout Template
-========================= */
-function layout(title, content) {
-  return `
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <title>${title}</title>
-    <style>
-      body { font-family: Arial; margin: 40px; }
-      input, textarea { display:block; margin-bottom:10px; }
-      ul { padding-left: 20px; }
-      .error { color:red; }
-      form { margin-bottom: 20px; }
-    </style>
-  </head>
-  <body>
-    <h1>${title}</h1>
-    ${content}
-  </body>
-  </html>
-  `;
-}
-
-function renderErrors(errors) {
-  if (!errors) return "";
-  return `
-    <ul class="error">
-      ${errors.map(e => `<li>${e.msg}</li>`).join("")}
-    </ul>
-  `;
-}
-
-/* =========================
-   Routes
-========================= */
-
-// HOME - List Users
-app.get("/", (req, res) => {
-  const users = usersStorage.getUsers();
-
-  const list = users.map(user => `
-    <li>
-      <strong>${user.firstName} ${user.lastName}</strong><br>
-      Email: ${user.email}<br>
-      Age: ${user.age || "N/A"}<br>
-      Bio: ${user.bio || "N/A"}<br>
-      <a href="/${user.id}/update">Update</a>
-      <form action="/${user.id}/delete" method="POST" style="display:inline;">
-        <button type="submit">Delete</button>
-      </form>
-    </li>
-  `).join("");
-
-  res.send(layout("User List", `
-    <a href="/create">Create User</a>
-
-    <form action="/search" method="GET">
-      <input name="name" placeholder="Search by name">
-      <input name="email" placeholder="Search by email">
-      <button type="submit">Search</button>
-    </form>
-
-    <ul>${list}</ul>
-  `));
+// Signup
+app.post("/auth/signup", async (req, res) => {
+  const { username, email, password } = req.body;
+  const hash = await bcrypt.hash(password, 10);
+  db.run(
+    `INSERT INTO users (username, email, passwordHash) VALUES (?, ?, ?)`,
+    [username, email, hash],
+    function (err) {
+      if (err) return res.status(400).send(err.message);
+      res.send({ id: this.lastID, username, email });
+    }
+  );
 });
 
-// CREATE FORM
-app.get("/create", (req, res) => {
-  res.send(layout("Create User", `
-    <form method="POST">
-      <input name="firstName" placeholder="First Name" required>
-      <input name="lastName" placeholder="Last Name" required>
-      <input name="email" placeholder="Email" required>
-      <input name="age" placeholder="Age">
-      <textarea name="bio" placeholder="Bio (max 200 chars)"></textarea>
-      <button type="submit">Submit</button>
-    </form>
-    <a href="/">Back</a>
-  `));
+// Login
+app.post("/auth/login", (req, res) => {
+  const { email, password } = req.body;
+  db.get(`SELECT * FROM users WHERE email = ?`, [email], async (err, user) => {
+    if (!user) return res.status(400).send("User not found");
+    const match = await bcrypt.compare(password, user.passwordHash);
+    if (!match) return res.status(400).send("Wrong password");
+    const token = jwt.sign({ id: user.id, username: user.username }, SECRET);
+    res.send({ token });
+  });
 });
 
-// CREATE POST
-app.post("/create", validateUser, (req, res) => {
-  const errors = validationResult(req);
-
-  if (!errors.isEmpty()) {
-    return res.send(layout("Create User", `
-      ${renderErrors(errors.array())}
-      <form method="POST">
-        <input name="firstName" placeholder="First Name">
-        <input name="lastName" placeholder="Last Name">
-        <input name="email" placeholder="Email">
-        <input name="age" placeholder="Age">
-        <textarea name="bio"></textarea>
-        <button type="submit">Submit</button>
-      </form>
-      <a href="/">Back</a>
-    `));
-  }
-
-  const data = matchedData(req);
-  usersStorage.addUser(data);
-  res.redirect("/");
+// Get profile
+app.get("/users/:id", authMiddleware, (req, res) => {
+  db.get(`SELECT id, username, email, avatarUrl FROM users WHERE id = ?`, [req.params.id], (err, user) => {
+    if (!user) return res.status(404).send("User not found");
+    res.send(user);
+  });
 });
 
-// UPDATE FORM
-app.get("/:id/update", (req, res) => {
-  const user = usersStorage.getUser(req.params.id);
-  if (!user) return res.redirect("/");
-
-  res.send(layout("Update User", `
-    <form method="POST">
-      <input name="firstName" value="${user.firstName}" required>
-      <input name="lastName" value="${user.lastName}" required>
-      <input name="email" value="${user.email}" required>
-      <input name="age" value="${user.age || ""}">
-      <textarea name="bio">${user.bio || ""}</textarea>
-      <button type="submit">Update</button>
-    </form>
-    <a href="/">Back</a>
-  `));
+// Send message
+app.post("/messages", authMiddleware, (req, res) => {
+  const { receiverId, text } = req.body;
+  db.run(
+    `INSERT INTO messages (senderId, receiverId, text) VALUES (?, ?, ?)`,
+    [req.user.id, receiverId, text],
+    function (err) {
+      if (err) return res.status(400).send(err.message);
+      res.send({ id: this.lastID, senderId: req.user.id, receiverId, text });
+    }
+  );
 });
 
-// UPDATE POST
-app.post("/:id/update", validateUser, (req, res) => {
-  const errors = validationResult(req);
-  const user = usersStorage.getUser(req.params.id);
-
-  if (!errors.isEmpty()) {
-    return res.send(layout("Update User", `
-      ${renderErrors(errors.array())}
-      <a href="/">Back</a>
-    `));
-  }
-
-  const data = matchedData(req);
-  usersStorage.updateUser(req.params.id, data);
-  res.redirect("/");
+// Get messages with a user
+app.get("/messages/:userId", authMiddleware, (req, res) => {
+  const otherId = req.params.userId;
+  db.all(
+    `SELECT * FROM messages WHERE (senderId = ? AND receiverId = ?) OR (senderId = ? AND receiverId = ?) ORDER BY timestamp`,
+    [req.user.id, otherId, otherId, req.user.id],
+    (err, messages) => {
+      res.send(messages);
+    }
+  );
 });
 
-// DELETE
-app.post("/:id/delete", (req, res) => {
-  usersStorage.deleteUser(req.params.id);
-  res.redirect("/");
-});
-
-// SEARCH
-app.get("/search", (req, res) => {
-  const results = usersStorage.searchUsers(req.query);
-
-  const list = results.length === 0
-    ? "<li>No users found.</li>"
-    : results.map(user => `
-        <li>${user.firstName} ${user.lastName} - ${user.email}</li>
-      `).join("");
-
-  res.send(layout("Search Results", `
-    <a href="/">Back</a>
-    <ul>${list}</ul>
-  `));
-});
-
-/* =========================
-   Start Server
-========================= */
-app.listen(3000, () => {
-  console.log("Server running at http://localhost:3000");
-});
+app.listen(3000, () => console.log("Server running on http://localhost:3000"));
