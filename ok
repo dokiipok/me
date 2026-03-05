@@ -1,104 +1,220 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const bcrypt = require("bcrypt");
-const jwt = require("jsonwebtoken");
-const sqlite3 = require("sqlite3").verbose();
-const cors = require("cors");
+# main.rb
+require 'yaml'
 
-const app = express();
-app.use(cors());
-app.use(bodyParser.json());
+# ================== PIECE BASE CLASS ==================
+class Piece
+  attr_accessor :pos, :color, :board
 
-const SECRET = "supersecretkey";
+  def initialize(pos, color, board)
+    @pos = pos
+    @color = color
+    @board = board
+  end
 
-// Setup SQLite DB
-const db = new sqlite3.Database(":memory:");
-db.serialize(() => {
-  db.run(`CREATE TABLE users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    email TEXT UNIQUE,
-    passwordHash TEXT,
-    avatarUrl TEXT
-  )`);
-  db.run(`CREATE TABLE messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    senderId INTEGER,
-    receiverId INTEGER,
-    text TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-});
+  def moves
+    [] # to be overridden in subclasses
+  end
 
-// Auth middleware
-function authMiddleware(req, res, next) {
-  const token = req.headers["authorization"];
-  if (!token) return res.status(401).send("Missing token");
-  try {
-    req.user = jwt.verify(token, SECRET);
-    next();
-  } catch {
-    res.status(403).send("Invalid token");
-  }
-}
+  def valid_moves
+    moves.select { |end_pos| board.valid_move?(pos, end_pos, color) }
+  end
 
-// Signup
-app.post("/auth/signup", async (req, res) => {
-  const { username, email, password } = req.body;
-  const hash = await bcrypt.hash(password, 10);
-  db.run(
-    `INSERT INTO users (username, email, passwordHash) VALUES (?, ?, ?)`,
-    [username, email, hash],
-    function (err) {
-      if (err) return res.status(400).send(err.message);
-      res.send({ id: this.lastID, username, email });
-    }
-  );
-});
+  def to_s
+    "." # overridden by subclasses
+  end
+end
 
-// Login
-app.post("/auth/login", (req, res) => {
-  const { email, password } = req.body;
-  db.get(`SELECT * FROM users WHERE email = ?`, [email], async (err, user) => {
-    if (!user) return res.status(400).send("User not found");
-    const match = await bcrypt.compare(password, user.passwordHash);
-    if (!match) return res.status(400).send("Wrong password");
-    const token = jwt.sign({ id: user.id, username: user.username }, SECRET);
-    res.send({ token });
-  });
-});
+# ================== PIECES ==================
+class Pawn < Piece
+  def to_s; color == :white ? "♙" : "♟"; end
+  def moves
+    # TODO: implement pawn movement
+    []
+  end
+end
 
-// Get profile
-app.get("/users/:id", authMiddleware, (req, res) => {
-  db.get(`SELECT id, username, email, avatarUrl FROM users WHERE id = ?`, [req.params.id], (err, user) => {
-    if (!user) return res.status(404).send("User not found");
-    res.send(user);
-  });
-});
+class Rook < Piece
+  def to_s; color == :white ? "♖" : "♜"; end
+  def moves
+    []
+  end
+end
 
-// Send message
-app.post("/messages", authMiddleware, (req, res) => {
-  const { receiverId, text } = req.body;
-  db.run(
-    `INSERT INTO messages (senderId, receiverId, text) VALUES (?, ?, ?)`,
-    [req.user.id, receiverId, text],
-    function (err) {
-      if (err) return res.status(400).send(err.message);
-      res.send({ id: this.lastID, senderId: req.user.id, receiverId, text });
-    }
-  );
-});
+class Knight < Piece
+  def to_s; color == :white ? "♘" : "♞"; end
+  def moves
+    deltas = [[2,1],[1,2],[-1,2],[-2,1],[-2,-1],[-1,-2],[1,-2],[2,-1]]
+    deltas.map { |dx, dy| [pos[0]+dx, pos[1]+dy] }.select { |x,y| board.valid_pos?([x,y]) }
+  end
+end
 
-// Get messages with a user
-app.get("/messages/:userId", authMiddleware, (req, res) => {
-  const otherId = req.params.userId;
-  db.all(
-    `SELECT * FROM messages WHERE (senderId = ? AND receiverId = ?) OR (senderId = ? AND receiverId = ?) ORDER BY timestamp`,
-    [req.user.id, otherId, otherId, req.user.id],
-    (err, messages) => {
-      res.send(messages);
-    }
-  );
-});
+class Bishop < Piece
+  def to_s; color == :white ? "♗" : "♝"; end
+  def moves
+    []
+  end
+end
 
-app.listen(3000, () => console.log("Server running on http://localhost:3000"));
+class Queen < Piece
+  def to_s; color == :white ? "♕" : "♛"; end
+  def moves
+    []
+  end
+end
+
+class King < Piece
+  def to_s; color == :white ? "♔" : "♚"; end
+  def moves
+    []
+  end
+end
+
+# ================== BOARD ==================
+class Board
+  attr_accessor :grid
+
+  def initialize
+    @grid = Array.new(8) { Array.new(8) }
+    setup_pieces
+  end
+
+  def setup_pieces
+    # TODO: Place pawns
+    (0..7).each { |i| @grid[1][i] = Pawn.new([1,i], :black, self) }
+    (0..7).each { |i| @grid[6][i] = Pawn.new([6,i], :white, self) }
+
+    # TODO: Place rooks
+    @grid[0][0] = Rook.new([0,0], :black, self)
+    @grid[0][7] = Rook.new([0,7], :black, self)
+    @grid[7][0] = Rook.new([7,0], :white, self)
+    @grid[7][7] = Rook.new([7,7], :white, self)
+
+    # TODO: Place knights
+    @grid[0][1] = Knight.new([0,1], :black, self)
+    @grid[0][6] = Knight.new([0,6], :black, self)
+    @grid[7][1] = Knight.new([7,1], :white, self)
+    @grid[7][6] = Knight.new([7,6], :white, self)
+
+    # TODO: Place bishops
+    @grid[0][2] = Bishop.new([0,2], :black, self)
+    @grid[0][5] = Bishop.new([0,5], :black, self)
+    @grid[7][2] = Bishop.new([7,2], :white, self)
+    @grid[7][5] = Bishop.new([7,5], :white, self)
+
+    # TODO: Place queens
+    @grid[0][3] = Queen.new([0,3], :black, self)
+    @grid[7][3] = Queen.new([7,3], :white, self)
+
+    # TODO: Place kings
+    @grid[0][4] = King.new([0,4], :black, self)
+    @grid[7][4] = King.new([7,4], :white, self)
+  end
+
+  def render
+    puts "  a b c d e f g h"
+    @grid.each_with_index do |row, i|
+      print "#{8-i} "
+      row.each { |cell| print cell ? "#{cell} " : ". " }
+      puts
+    end
+  end
+
+  def valid_pos?(pos)
+    pos.all? { |coord| coord.between?(0,7) }
+  end
+
+  def valid_move?(start_pos, end_pos, color)
+    return false unless valid_pos?(start_pos) && valid_pos?(end_pos)
+    piece = @grid[start_pos[0]][start_pos[1]]
+    return false if piece.nil? || piece.color != color
+    # TODO: check move legality and king safety
+    true
+  end
+
+  def move_piece(start_pos, end_pos)
+    piece = @grid[start_pos[0]][start_pos[1]]
+    return false unless piece && valid_move?(start_pos, end_pos, piece.color)
+    @grid[end_pos[0]][end_pos[1]] = piece
+    @grid[start_pos[0]][start_pos[1]] = nil
+    piece.pos = end_pos
+    true
+  end
+
+  def in_check?(color)
+    # TODO: implement check detection
+    false
+  end
+
+  def checkmate?(color)
+    # TODO: implement checkmate detection
+    false
+  end
+end
+
+# ================== GAME ==================
+class Game
+  attr_accessor :board, :current_player
+
+  def initialize
+    @board = Board.new
+    @current_player = :white
+  end
+
+  def switch_turn
+    @current_player = (@current_player == :white ? :black : :white)
+  end
+
+  def play
+    loop do
+      board.render
+      puts "#{current_player.capitalize}'s turn. Enter move (e.g. 'e2 e4') or 'save':"
+      input = gets.chomp
+      if input == "save"
+        save_game
+        next
+      end
+      start_pos, end_pos = parse_input(input)
+      if board.move_piece(start_pos, end_pos)
+        if board.checkmate?(opponent_color)
+          board.render
+          puts "#{current_player.capitalize} wins by checkmate!"
+          break
+        end
+        switch_turn
+      else
+        puts "Invalid move. Try again."
+      end
+    end
+  end
+
+  def opponent_color
+    current_player == :white ? :black : :white
+  end
+
+  def parse_input(str)
+    from, to = str.split
+    [coords(from), coords(to)]
+  end
+
+  def coords(pos)
+    row = 8 - pos[1].to_i
+    col = pos[0].ord - "a".ord
+    [row, col]
+  end
+
+  def save_game
+    File.open("chess_save.yml", "w") { |f| f.puts YAML.dump(self) }
+    puts "Game saved!"
+  end
+
+  def self.load_game
+    YAML.load_file("chess_save.yml")
+  end
+end
+
+# ================== START GAME ==================
+if __FILE__ == $0
+  puts "Welcome to Ruby Chess!"
+  game = Game.new
+  game.play
+end
