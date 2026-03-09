@@ -1,5 +1,20 @@
-# main.rb
-require 'yaml'
+# ================== SLIDING PIECE MODULE ==================
+module SlidingPiece
+  def slide_dirs(directions)
+    moves = []
+    directions.each do |dx, dy|
+      x, y = pos
+      loop do
+        x += dx
+        y += dy
+        break unless board.valid_pos?([x, y])
+        moves << [x, y]
+        break if board.grid[x][y] # stop if piece blocks path
+      end
+    end
+    moves
+  end
+end
 
 # ================== PIECE BASE CLASS ==================
 class Piece
@@ -12,7 +27,7 @@ class Piece
   end
 
   def moves
-    [] # to be overridden in subclasses
+    [] # overridden by subclasses
   end
 
   def valid_moves
@@ -20,23 +35,31 @@ class Piece
   end
 
   def to_s
-    "." # overridden by subclasses
+    "." # overridden
   end
 end
 
 # ================== PIECES ==================
 class Pawn < Piece
   def to_s; color == :white ? "♙" : "♟"; end
+
   def moves
-    # TODO: implement pawn movement
-    []
+    x, y = pos
+    dir = color == :white ? -1 : 1
+    moves = []
+
+    forward = [x + dir, y]
+    moves << forward if board.valid_pos?(forward) && board.grid[forward[0]][forward[1]].nil?
+
+    moves
   end
 end
 
 class Rook < Piece
+  include SlidingPiece
   def to_s; color == :white ? "♖" : "♜"; end
   def moves
-    []
+    slide_dirs([[1,0], [-1,0], [0,1], [0,-1]])
   end
 end
 
@@ -44,28 +67,33 @@ class Knight < Piece
   def to_s; color == :white ? "♘" : "♞"; end
   def moves
     deltas = [[2,1],[1,2],[-1,2],[-2,1],[-2,-1],[-1,-2],[1,-2],[2,-1]]
-    deltas.map { |dx, dy| [pos[0]+dx, pos[1]+dy] }.select { |x,y| board.valid_pos?([x,y]) }
+    deltas.map { |dx, dy| [pos[0]+dx, pos[1]+dy] }
+          .select { |x,y| board.valid_pos?([x,y]) }
   end
 end
 
 class Bishop < Piece
+  include SlidingPiece
   def to_s; color == :white ? "♗" : "♝"; end
   def moves
-    []
+    slide_dirs([[1,1], [1,-1], [-1,1], [-1,-1]])
   end
 end
 
 class Queen < Piece
+  include SlidingPiece
   def to_s; color == :white ? "♕" : "♛"; end
   def moves
-    []
+    slide_dirs([[1,0], [-1,0], [0,1], [0,-1], [1,1], [1,-1], [-1,1], [-1,-1]])
   end
 end
 
 class King < Piece
   def to_s; color == :white ? "♔" : "♚"; end
   def moves
-    []
+    deltas = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]
+    deltas.map { |dx, dy| [pos[0]+dx, pos[1]+dy] }
+          .select { |x,y| board.valid_pos?([x,y]) }
   end
 end
 
@@ -79,33 +107,33 @@ class Board
   end
 
   def setup_pieces
-    # TODO: Place pawns
+    # Pawns
     (0..7).each { |i| @grid[1][i] = Pawn.new([1,i], :black, self) }
     (0..7).each { |i| @grid[6][i] = Pawn.new([6,i], :white, self) }
 
-    # TODO: Place rooks
+    # Rooks
     @grid[0][0] = Rook.new([0,0], :black, self)
     @grid[0][7] = Rook.new([0,7], :black, self)
     @grid[7][0] = Rook.new([7,0], :white, self)
     @grid[7][7] = Rook.new([7,7], :white, self)
 
-    # TODO: Place knights
+    # Knights
     @grid[0][1] = Knight.new([0,1], :black, self)
     @grid[0][6] = Knight.new([0,6], :black, self)
     @grid[7][1] = Knight.new([7,1], :white, self)
     @grid[7][6] = Knight.new([7,6], :white, self)
 
-    # TODO: Place bishops
+    # Bishops
     @grid[0][2] = Bishop.new([0,2], :black, self)
     @grid[0][5] = Bishop.new([0,5], :black, self)
     @grid[7][2] = Bishop.new([7,2], :white, self)
     @grid[7][5] = Bishop.new([7,5], :white, self)
 
-    # TODO: Place queens
+    # Queens
     @grid[0][3] = Queen.new([0,3], :black, self)
     @grid[7][3] = Queen.new([7,3], :white, self)
 
-    # TODO: Place kings
+    # Kings
     @grid[0][4] = King.new([0,4], :black, self)
     @grid[7][4] = King.new([7,4], :white, self)
   end
@@ -127,7 +155,6 @@ class Board
     return false unless valid_pos?(start_pos) && valid_pos?(end_pos)
     piece = @grid[start_pos[0]][start_pos[1]]
     return false if piece.nil? || piece.color != color
-    # TODO: check move legality and king safety
     true
   end
 
@@ -141,17 +168,17 @@ class Board
   end
 
   def in_check?(color)
-    # TODO: implement check detection
     false
   end
 
   def checkmate?(color)
-    # TODO: implement checkmate detection
     false
   end
 end
 
 # ================== GAME ==================
+require 'yaml'
+
 class Game
   attr_accessor :board, :current_player
 
@@ -169,11 +196,19 @@ class Game
       board.render
       puts "#{current_player.capitalize}'s turn. Enter move (e.g. 'e2 e4') or 'save':"
       input = gets.chomp
+
       if input == "save"
         save_game
         next
       end
+
+      unless input =~ /^[a-h][1-8] [a-h][1-8]$/
+        puts "Invalid format. Use 'e2 e4'."
+        next
+      end
+
       start_pos, end_pos = parse_input(input)
+
       if board.move_piece(start_pos, end_pos)
         if board.checkmate?(opponent_color)
           board.render
@@ -196,6 +231,7 @@ class Game
     [coords(from), coords(to)]
   end
 
+  # Converts "e2" → [6, 4]
   def coords(pos)
     row = 8 - pos[1].to_i
     col = pos[0].ord - "a".ord
